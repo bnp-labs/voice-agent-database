@@ -49,7 +49,7 @@ voice-agent-database/postgres/
 ├── Dockerfile                    # verified: flyio/postgres-flex + pgvector
 ├── Makefile                      # convenience wrappers around the steps below
 ├── .github/workflows/
-│   └── build-and-push.yml        # builds on REAL amd64 (not emulated), pushes to registry.fly.io
+│   └── build-and-push.yml        # builds on REAL amd64 (not emulated), pushes to GHCR
 └── scripts/
     ├── verify-connectivity.sh    # §4 — 6PN reachability + pgvector check, before migrating
     ├── migrate-from-mpg.sh       # §6 — wraps `fly postgres import`
@@ -82,24 +82,43 @@ virtual CPU — not guaranteed to match Fly's actual amd64 hardware, and a
 mismatch here means a crash in production, not a build error you'd catch
 locally. A real amd64 CI runner doesn't have this problem.
 
+**Push target is GHCR, not `registry.fly.io` — this is not optional, it's
+the fix for a real error.** `registry.fly.io/<name>` is a per-app
+namespace that only exists once an app named `<name>` already exists in
+your org — and at this point in the guide, `fly postgres create` (§3)
+hasn't run yet, so that app doesn't exist. Confirmed by hitting it for
+real: `docker push registry.fly.io/voxai-pg-selfhosted:...` fails with
+`unknown: app repository not found` before the app exists. Push to GHCR
+(public) instead, and `fly postgres create --image-ref` pulls from there
+in §3 — this is also what Fly's own community recommends for this exact
+scenario.
+
+**The GHCR package must be set to PUBLIC after the first push** — Fly's
+infrastructure can't authenticate to pull a private third-party registry
+image (this bit the platform's own application images earlier this
+session, same underlying limitation). One-time: GitHub → `bnp-labs` org →
+Packages → `voxai-pg-selfhosted` → Package settings → Change visibility →
+Public.
+
 Use the provided GitHub Actions workflow — same pattern already used for
 every other service's CI in this workspace (`docker/build-push-action`,
 `docker/login-action`), just building this instead of an app:
 
 ```bash
 cd voice-agent-database/postgres
-# One-time: add these as GitHub repo secrets once this folder is a real
-# repo — FLY_API_TOKEN (for `fly auth docker`), same scoping discipline as
-# every other FLY_API_TOKEN in this workspace (per-app/per-purpose, not
-# org-wide).
-git push  # triggers .github/workflows/build-and-push.yml
+git push origin main   # push this folder as its own repo first
+gh workflow run build-and-push.yml -R bnp-labs/voice-agent-database \
+  -f postgres_flex_tag=16.11 -f pgvector_tag=v0.8.6
 ```
+(No new GitHub secret needed beyond the automatic `GITHUB_TOKEN` — GHCR
+push auth uses that, unlike the `registry.fly.io` approach this replaces
+which would have needed `FLY_API_TOKEN` for `fly auth docker`.)
 
 Or manually, from a real amd64 machine (a Linux CI box, not your Mac):
 ```bash
-fly auth docker
+docker login ghcr.io -u <your-github-username>   # PAT with write:packages
 docker buildx build --platform linux/amd64 \
-  -t registry.fly.io/voxai-pg-selfhosted:16.11-pgvector0.8.6 \
+  -t ghcr.io/bnp-labs/voxai-pg-selfhosted:16.11-pgvector0.8.6 \
   --push .
 ```
 
@@ -119,7 +138,7 @@ fly postgres create \
   --vm-cpu-kind shared --vm-cpus 1 --vm-memory 1024 \
   --volume-size 10 \
   --enable-backups \
-  --image-ref registry.fly.io/voxai-pg-selfhosted:16.11-pgvector0.8.6
+  --image-ref ghcr.io/bnp-labs/voxai-pg-selfhosted:16.11-pgvector0.8.6
 ```
 
 `--enable-backups` provisions a Tigris (Fly's S3-compatible storage)
