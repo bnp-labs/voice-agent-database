@@ -43,18 +43,30 @@ Verified for real, not assumed, before this README was written:
 
 ## 1. Folder contents
 
+`voice-agent-database` is the GitHub repo itself — `postgres/` is a
+subfolder within it (room for `redis/` or others alongside it later, same
+idea as `voice-agent-infra` holding multiple concerns). **`.github/` lives
+at the repo root**, one level above `postgres/`, not inside it — GitHub
+only ever discovers workflows at `.github/workflows/` relative to the repo
+root; nested anywhere else, they're silently never triggered. Got this
+wrong once already this session (had it nested inside `postgres/`) — fixed,
+noted here so it doesn't happen again next time a folder gets added.
+
 ```
-voice-agent-database/postgres/
-├── README.md                     # this file — the step-by-step guide
-├── Dockerfile                    # verified: flyio/postgres-flex + pgvector
-├── Makefile                      # convenience wrappers around the steps below
+voice-agent-database/                  # repo root
 ├── .github/workflows/
-│   └── build-and-push.yml        # builds on REAL amd64 (not emulated), pushes to GHCR
-└── scripts/
-    ├── verify-connectivity.sh    # §4 — 6PN reachability + pgvector check, before migrating
-    ├── migrate-from-mpg.sh       # §6 — wraps `fly postgres import`
-    ├── cutover.sh                # §7 — points api/worker/jobs at the new DB
-    └── check-backups.sh          # §10 — confirms backups are actually landing
+│   └── build-and-push.yml            # builds on REAL amd64 (not emulated), pushes to GHCR
+│                                       # context: postgres — Dockerfile lives one level down
+└── postgres/
+    ├── README.md                     # this file — the step-by-step guide
+    ├── Dockerfile                    # verified: flyio/postgres-flex + pgvector
+    ├── Makefile                      # convenience wrappers around the steps below
+    ├── .dockerignore
+    └── scripts/
+        ├── verify-connectivity.sh    # §4 — 6PN reachability + pgvector check, before migrating
+        ├── migrate-from-mpg.sh       # §6 — wraps `fly postgres import`
+        ├── cutover.sh                # §7 — points api/worker/jobs at the new DB
+        └── check-backups.sh          # §10 — confirms backups are actually landing
 ```
 
 ---
@@ -105,8 +117,8 @@ every other service's CI in this workspace (`docker/build-push-action`,
 `docker/login-action`), just building this instead of an app:
 
 ```bash
-cd voice-agent-database/postgres
-git push origin main   # push this folder as its own repo first
+cd voice-agent-database   # repo root — not postgres/, .github/ lives here (see §1)
+git push origin main
 gh workflow run build-and-push.yml -R bnp-labs/voice-agent-database \
   -f postgres_flex_tag=16.11 -f pgvector_tag=v0.8.6
 ```

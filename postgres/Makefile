@@ -23,8 +23,8 @@ build: ## Build the image locally (§2 of README — testing only, NOT for produ
 	docker buildx build --platform linux/amd64 -t $(IMAGE) .
 
 .PHONY: build-ci
-build-ci: ## Reminder: real builds go through .github/workflows/build-and-push.yml (real amd64 hardware), not this Makefile
-	@echo "Push to trigger .github/workflows/build-and-push.yml — see README.md §2 for why local builds on Apple Silicon aren't safe for this image (-march=native)."
+build-ci: ## Reminder: real builds go through ../.github/workflows/build-and-push.yml (real amd64 hardware), not this Makefile
+	@echo "Push to trigger ../.github/workflows/build-and-push.yml (repo root, not here — see README.md §1) — see README.md §2 for why local builds on Apple Silicon aren't safe for this image (-march=native)."
 
 .PHONY: push
 push: ## Push a locally-built image to GHCR (only if you built it on real amd64 hardware — see build-ci)

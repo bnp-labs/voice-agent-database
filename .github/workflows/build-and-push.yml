@@ -64,7 +64,11 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
+          # Repo root is voice-agent-database/ (this workflow file must
+          # live at .github/workflows/ relative to THAT, per GitHub's own
+          # requirement — it's never discovered from a subfolder). The
+          # Dockerfile itself lives one level down, in postgres/.
+          context: postgres
           platforms: linux/amd64
           push: true
           build-args: |
