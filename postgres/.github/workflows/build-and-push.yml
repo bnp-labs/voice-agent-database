@@ -1,0 +1,54 @@
+# Builds the postgres+pgvector image on REAL amd64 hardware (GitHub-hosted
+# ubuntu-latest runners are genuine amd64, not emulated) and pushes to Fly's
+# own registry. See README.md §2 for why this matters — Postgres 16's build
+# on flyio/postgres-flex compiles with -march=native, and building under
+# local Docker Desktop emulation on Apple Silicon risks tuning the compiled
+# vector.so for the wrong CPU.
+#
+# Manual trigger only for now (workflow_dispatch) — this image changes
+# rarely (only when bumping the pgvector or postgres-flex version), unlike
+# an application image that rebuilds on every push. Add a path-filtered
+# `on: push` trigger later if this folder starts changing more often.
+
+name: Build and push postgres+pgvector image
+
+on:
+  workflow_dispatch:
+    inputs:
+      postgres_flex_tag:
+        description: "flyio/postgres-flex base tag"
+        required: true
+        default: "16.11"
+      pgvector_tag:
+        description: "pgvector git tag to build"
+        required: true
+        default: "v0.8.6"
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Authenticate to Fly's registry
+        run: flyctl auth docker
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            POSTGRES_FLEX_TAG=${{ inputs.postgres_flex_tag }}
+            PGVECTOR_TAG=${{ inputs.pgvector_tag }}
+          tags: |
+            registry.fly.io/voxai-pg-selfhosted:${{ inputs.postgres_flex_tag }}-pgvector${{ inputs.pgvector_tag }}
+          provenance: false
