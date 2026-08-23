@@ -61,6 +61,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute image tag
+        id: vars
+        # pgvector_tag is a git ref ("v0.8.6" — needs the "v" for
+        # `git clone --branch`), but every other reference to the built
+        # image (README.md, Makefile, `fly postgres create --image-ref`)
+        # uses the tag WITHOUT the leading "v" (e.g. "pgvector0.8.6"). A
+        # naive concatenation of the two produced "pgvectorv0.8.6" — a
+        # tag nothing else in this repo referenced, which is exactly the
+        # "manifest unknown" 404 `fly postgres create` hit for real.
+        # Strip it here, once, so this can't drift again.
+        run: |
+          PGVECTOR_TAG="${{ inputs.pgvector_tag }}"
+          echo "pgvector_version=${PGVECTOR_TAG#v}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -75,7 +89,7 @@ jobs:
             POSTGRES_FLEX_TAG=${{ inputs.postgres_flex_tag }}
             PGVECTOR_TAG=${{ inputs.pgvector_tag }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.postgres_flex_tag }}-pgvector${{ inputs.pgvector_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.postgres_flex_tag }}-pgvector${{ steps.vars.outputs.pgvector_version }}
           provenance: false
 
       - name: Reminder

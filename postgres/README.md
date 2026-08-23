@@ -39,6 +39,18 @@ Verified for real, not assumed, before this README was written:
 2. **The image built for local testing was discarded, not pushed anywhere.** Building the real deployable image is [§2](#2-build-the-image-for-real-on-real-amd64-hardware) below — do that before trying to `fly postgres create --image-ref` against it.
 3. **Backup/restore has not been drilled.** `--enable-backups` provisions the mechanism; it hasn't been tested end-to-end (backup → restore → verify).
 
+**Real errors hit going through this guide, and the actual fixes** (kept
+here so the next person doesn't re-derive these from scratch):
+
+| Error | Cause | Fix |
+|---|---|---|
+| `docker push registry.fly.io/...`: `unknown: app repository not found` | `registry.fly.io/<name>` only exists once a Fly app named `<name>` exists — `fly postgres create` (§3) hadn't run yet | Push to GHCR instead (§2) — already fixed in this repo |
+| `fly postgres create`: `failed to get manifest ...: unauthorized` | GHCR package defaults to **private** on first push; Fly can't authenticate to a private third-party registry | Make the package public — **not** the repo's visibility, the package's own settings: `github.com/orgs/bnp-labs/packages/container/voxai-pg-selfhosted/settings` → Change visibility |
+| `fly postgres create`: `manifest unknown [http 404]` after the package was already public | The workflow's tag-construction concatenated the `pgvector_tag` input (`v0.8.6`, with the `v` — needed for `git clone --branch`) directly into the image tag, producing `pgvectorv0.8.6` — a tag nothing else in this repo referenced (everywhere else says `pgvector0.8.6`, no `v`) | Fixed in `.github/workflows/build-and-push.yml` — strips the leading `v` before building the final tag string, in its own step |
+| `fly postgres create` failed mid-provision (`failed to launch VM: ... manifest ...`), left a `pending` app + an orphaned, still-billing 10GB volume behind | Fly doesn't clean up automatically on a failed create | `fly apps destroy <name>` removes the app **and** its volume in one step — confirmed empty afterward with `fly volumes list`. Don't assume a failed create leaves nothing behind; check before retrying. |
+| `fly postgres import`: `region code must be specified when not running interactively`, then (after adding `--region`) `prompt: non interactive` | The import spins up a temporary migration machine and normally prompts for region + VM size — both need explicit flags in a non-interactive/scripted context | Add `--region iad --vm-size shared-cpu-1x` (or your region/size) to the import command |
+| `fly postgres import --create=false` reported `Import complete!`, but the target database (`voice_agent`, matching the source URI's path) had zero tables | `--create=false` doesn't target the database named in the source URI — it silently imports into the target cluster's **default** `postgres` database instead | Use `postgres` as the database name in `DATABASE_URL`, not `voice_agent` — confirmed by checking `postgres` directly (52 tables, real data, including the "Ambuj Workspace" row) after `voice_agent` came up empty. `cutover.sh`'s default was updated accordingly. If you want the `voice_agent` name specifically, migrate the data again with `--create=true` instead (untested here — go with `postgres` unless the name genuinely matters to you). |
+
 ---
 
 ## 1. Folder contents

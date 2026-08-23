@@ -11,12 +11,16 @@ set -euo pipefail
 
 PG_APP="${1:-voxai-pg-selfhosted}"
 DB_USER="${2:-voice_agent}"
-DB_NAME="${3:-voice_agent}"
+DB_NAME="${3:-postgres}"  # NOT voice_agent — fly postgres import --create=false ignored the source URI's db name and landed everything in the default "postgres" db instead; confirmed against real migrated data
 
 read -r -s -p "Postgres password for ${DB_USER}@${PG_APP}: " DB_PASSWORD
 echo
 
-DATABASE_URL="postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@${PG_APP}.internal:5432/${DB_NAME}"
+# Port 5433, not 5432 — this cluster's repmgr-managed proxy listens on
+# 5432 (both were confirmed reachable), but 5433 is the raw Postgres port,
+# not routed through any proxy. Same "always direct, never pooled"
+# discipline as the MPG cutover earlier this session.
+DATABASE_URL="postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@${PG_APP}.internal:5433/${DB_NAME}"
 
 for app in voxai-api voxai-worker voxai-jobs; do
     echo "Setting DATABASE_URL on ${app} ..."
