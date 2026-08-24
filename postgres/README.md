@@ -14,10 +14,15 @@ Postgres upgrades yourself instead of Fly managing them. See
 [§9 What you're giving up](#9-what-youre-giving-up-vs-mpg) before deciding
 this is worth it for your situation.
 
-**Status as of 2026-08-23:** planning + a verified, working Dockerfile.
-Nothing in this folder has been deployed. No Fly cluster has been created.
-The existing MPG cluster (`voxai-pg`, id `w86750817lnr3pk4`) is still what
-`voxai-api`/`voxai-worker`/`voxai-jobs` actually use.
+**Status as of 2026-08-24: cutover is complete.** `voxai-pg-selfhosted` is
+deployed and is what `voxai-api`/`voxai-worker`/`voxai-jobs` actually use in
+the Fly dev/test environment — the old MPG cluster (`voxai-pg`, id
+`w86750817lnr3pk4`) has been fully decommissioned (§8). This supersedes the
+"nothing deployed yet" framing that the rest of this README (written
+2026-08-23, mid-migration) was drafted against — the steps below are now a
+record of what was done, not a forward-looking plan. Note this remains the
+platform's **dev/test** database; Azure is the intended future production
+target (not started) — see the workspace root `CLAUDE.md`.
 
 ---
 
@@ -33,11 +38,19 @@ Verified for real, not assumed, before this README was written:
 | The Dockerfile in this folder actually compiles pgvector against this exact image's Postgres build | Built it locally (`docker buildx build --platform linux/amd64`), both against `v0.7.4` and `v0.8.6` — both succeeded. |
 | The compiled extension actually **works**, not just "the file exists" | Booted Postgres manually inside the built image (bypassing Flex's own cluster-orchestration entrypoint, which expects Fly's runtime env) via `initdb` + `pg_ctl`, ran `CREATE EXTENSION vector;` (succeeded, correct version), then ran `SELECT '[1,2,3]'::vector <-> '[4,5,6]'::vector` and got the mathematically correct `5.196152422706632` (√27). |
 
-**Not yet verified — genuinely open questions, not settled facts:**
+**Resolved since cutover (2026-08-24):**
 
-1. **6PN private networking to a self-hosted Postgres app.** This org's Fly private networking to app-declared ports has already failed once this session (`voxai-api`'s own port was unreachable via `.internal` from other apps — confirmed on multiple apps, multiple times, only worked after switching to public URLs). Postgres clusters may route differently (a different mechanism than plain app ports), but **do not assume** — [§4](#4-verify-connectivity-before-touching-real-data) is a mandatory checkpoint before migrating real data, not an optional nice-to-have.
-2. **The image built for local testing was discarded, not pushed anywhere.** Building the real deployable image is [§2](#2-build-the-image-for-real-on-real-amd64-hardware) below — do that before trying to `fly postgres create --image-ref` against it.
-3. **Backup/restore has not been drilled.** `--enable-backups` provisions the mechanism; it hasn't been tested end-to-end (backup → restore → verify).
+1. ~~6PN private networking to a self-hosted Postgres app~~ — resolved:
+   `voxai-pg-selfhosted` is live and reachable from `voxai-api`/`worker`/
+   `jobs`, working fine as of the cutover. Whatever mechanism Postgres
+   clusters use apparently didn't hit the same `.internal` routing failure
+   plain app ports did.
+2. ~~Image built for local testing was discarded~~ — resolved: the real
+   image was built and pushed per [§2](#2-build-the-image-for-real-on-real-amd64-hardware), cluster created per [§3](#3-create-the-cluster).
+
+**Still genuinely open — not settled facts:**
+
+3. **Backup/restore has not been drilled.** `--enable-backups` provisions the mechanism; it hasn't been tested end-to-end (backup → restore → verify). Do this before trusting it in an incident.
 
 **Real errors hit going through this guide, and the actual fixes** (kept
 here so the next person doesn't re-derive these from scratch):
@@ -288,6 +301,58 @@ fly mpg delete w86750817lnr3pk4
 ---
 
 ## 10. Ongoing maintenance
+
+**Status: commands below not yet confirmed run against the live
+`voxai-pg-selfhosted` cluster** — see `docs/known-issues.md` Tier 1 #3 in
+the workspace root. This was the root fix for the 2026-08-23 incident (which
+happened on the then-live MPG cluster); run it here now that
+`voxai-pg-selfhosted` is the actual live database. Needs to be run directly
+by Ambuj (`ALTER DATABASE` has tripped the agent permission classifier
+before) — update this status line once done.
+
+### Session/lock timeouts — set this once, right after cluster creation
+
+Fresh `flyio/postgres-flex` clusters ship with `idle_in_transaction_session_timeout`,
+`statement_timeout`, and `lock_timeout` all disabled (`0` — no limit). That
+bit voxai-api on 2026-08-23: an app-side connection got left `idle in
+transaction` (see `db/session.py`'s `get_session()` for the app-level
+hardening that's the other half of this fix), holding row locks on
+`sessions` for **over an hour**, with nothing on the Postgres side to kill
+it. Every other request touching `sessions` — i.e. almost every
+authenticated request — queued behind it until the app's own connection
+pool filled up and started timing out. Run this against every new cluster,
+not just this one:
+
+```bash
+fly ssh console -a voxai-pg-selfhosted -C "psql -U postgres -h /var/run/postgresql -p 5433 -d postgres -c \"ALTER DATABASE postgres SET idle_in_transaction_session_timeout = '60s';\""
+fly ssh console -a voxai-pg-selfhosted -C "psql -U postgres -h /var/run/postgresql -p 5433 -d postgres -c \"ALTER DATABASE postgres SET lock_timeout = '15s';\""
+```
+
+`idle_in_transaction_session_timeout=60s` is the one that matters most: it
+guarantees a leaked/stuck transaction can never sit longer than 60s
+regardless of *why* it got stuck — a safety net independent of whatever
+application bug (or the next one) causes it. It's safe to set aggressively;
+it only fires when a session is truly idle (no query running) inside an
+open transaction, which should never legitimately last more than
+milliseconds between statements in the same transaction — it cannot kill a
+query that's actually executing. `lock_timeout=15s` fails a query fast if
+it's stuck waiting on someone else's lock, instead of queueing silently.
+
+Deliberately **not** setting `statement_timeout` cluster-wide: it bounds
+genuinely slow-but-legitimate queries too (analytics/billing rollups scan a
+7-day window; KB ingestion embeds real documents), and a wrong global value
+risks killing real work instead of just stuck ones. If a specific workload
+needs it, set it per-session in that code path, not globally.
+
+Verify what's active any time:
+```bash
+fly ssh console -a voxai-pg-selfhosted -C "psql -U postgres -h /var/run/postgresql -p 5433 -d postgres -c \"SHOW idle_in_transaction_session_timeout;\""
+```
+
+Check for a stuck session right now (also surfaced by `voice-agent-api doctor`'s `stuck_transactions` check):
+```bash
+fly ssh console -a voxai-pg-selfhosted -C "psql -U postgres -h /var/run/postgresql -p 5433 -d postgres -c \"SELECT pid, state, now()-xact_start AS stuck_for FROM pg_stat_activity WHERE state = 'idle in transaction';\""
+```
 
 ```bash
 ./scripts/check-backups.sh    # confirm backups are actually landing, not just configured
