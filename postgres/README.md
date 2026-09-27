@@ -303,7 +303,7 @@ fly mpg delete w86750817lnr3pk4
 ## 10. Ongoing maintenance
 
 **Status: commands below not yet confirmed run against the live
-`voxai-pg-selfhosted` cluster** — see `docs/known-issues.md` Tier 1 #3 in
+`voxai-pg-selfhosted` cluster** — see `docs/platform/known-issues.md` Tier 1 #3 in
 the workspace root. This was the root fix for the 2026-08-23 incident (which
 happened on the then-live MPG cluster); run it here now that
 `voxai-pg-selfhosted` is the actual live database. Needs to be run directly
@@ -360,7 +360,7 @@ fly ssh console -a voxai-pg-selfhosted -C "psql -U postgres -h /var/run/postgres
 
 Do a real restore drill periodically (not just once at setup) — the same
 discipline the original VPS deployment plan already established for its
-own `pg_backup.sh`/`pg_restore.sh` pattern (`docs/infra/deployment_plan.md`
+own `pg_backup.sh`/`pg_restore.sh` pattern (`docs/archive/vps-deployment-plan.md`
 §11 in the workspace root), reused here instead of reinvented.
 
 ---
