@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# README.md §7 — point voxai-api/voxai-worker/voxai-jobs at the new
+# README.md §7 — point vocetto-api/vocetto-worker/vocetto-jobs at the new
 # self-hosted database. Same discipline established earlier this session
 # for the MPG cluster: DIRECT connection (never a pooled endpoint —
 # PgBouncer-style pooling was already found to conflict with asyncpg's
@@ -22,13 +22,13 @@ echo
 # discipline as the MPG cutover earlier this session.
 DATABASE_URL="postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@${PG_APP}.internal:5433/${DB_NAME}"
 
-for app in voxai-api voxai-worker voxai-jobs; do
+for app in vocetto-api vocetto-worker vocetto-jobs; do
     echo "Setting DATABASE_URL on ${app} ..."
     fly secrets set DATABASE_URL="$DATABASE_URL" -a "$app"
 done
 
 echo
 echo "Done. Verify before touching MPG (§8):"
-echo "  curl https://voxai-api.fly.dev/healthz"
-echo "  fly logs -a voxai-worker   # confirm clean startup, no DB connection errors"
-echo "  fly logs -a voxai-jobs     # same, across all 9 process groups"
+echo "  curl https://vocetto-api.fly.dev/healthz"
+echo "  fly logs -a vocetto-worker   # confirm clean startup, no DB connection errors"
+echo "  fly logs -a vocetto-jobs     # same, across all 9 process groups"

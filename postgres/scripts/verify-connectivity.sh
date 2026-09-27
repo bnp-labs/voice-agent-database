@@ -2,7 +2,7 @@
 # README.md §4 — mandatory before migrating any real data.
 #
 # This org's 6PN private networking to app-declared ports has already
-# failed once this session: voxai-api's own port was unreachable via
+# failed once this session: vocetto-api's own port was unreachable via
 # `.internal` from other apps (DNS resolved fine, raw TCP connect timed
 # out), confirmed from multiple apps, multiple times — only resolved by
 # switching those apps to public URLs instead. Postgres clusters may use a
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 PG_APP="${1:-voxai-pg-selfhosted}"
-TEST_FROM_APP="${2:-voxai-api}"
+TEST_FROM_APP="${2:-vocetto-api}"
 
 echo "Testing TCP connectivity from ${TEST_FROM_APP} to ${PG_APP}.internal:5432 ..."
 echo
@@ -30,5 +30,5 @@ except Exception as e:
 echo
 echo "If this failed: STOP. Do not proceed to migrate (§6) or cutover (§7) —"
 echo "the .internal hostnames this guide uses won't work. Same failure mode"
-echo "as voxai-api's own 6PN issue this session — needs a different"
+echo "as vocetto-api's own 6PN issue this session — needs a different"
 echo "connectivity approach before going further."

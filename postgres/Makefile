@@ -63,7 +63,7 @@ migrate: ## §6 — import data from the existing MPG cluster (set MPG_SOURCE_UR
 	./scripts/migrate-from-mpg.sh "$(MPG_SOURCE_URI)"
 
 .PHONY: cutover
-cutover: ## §7 — point voxai-api/worker/jobs at the new database
+cutover: ## §7 — point vocetto-api/worker/jobs at the new database
 	./scripts/cutover.sh
 
 .PHONY: check-backups
@@ -76,9 +76,9 @@ proxy: ## §11 — tunnel the cluster to localhost:5432 for laptop access
 
 .PHONY: decommission-mpg
 decommission-mpg: ## §8 — detach MPG from all three apps (does NOT delete it — do that manually once confident)
-	fly mpg detach w86750817lnr3pk4 --app voxai-api
-	fly mpg detach w86750817lnr3pk4 --app voxai-worker
-	fly mpg detach w86750817lnr3pk4 --app voxai-jobs
+	fly mpg detach w86750817lnr3pk4 --app vocetto-api
+	fly mpg detach w86750817lnr3pk4 --app vocetto-worker
+	fly mpg detach w86750817lnr3pk4 --app vocetto-jobs
 	@echo "MPG detached, NOT deleted. Run 'fly mpg delete w86750817lnr3pk4' yourself once confident — see README.md §8."
 
 .DEFAULT_GOAL := help

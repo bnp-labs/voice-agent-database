@@ -1,6 +1,6 @@
 # voice-agent-database / postgres
 
-Self-hosted Postgres 16 + pgvector for the VoxAI platform on Fly.io — a
+Self-hosted Postgres 16 + pgvector for the Vocetto platform on Fly.io — a
 cost-optimized replacement for Fly Managed Postgres (MPG). This folder is
 everything needed to build the image, stand up the cluster, migrate off
 MPG, verify it, and connect to it (from the platform's other Fly apps and
@@ -15,14 +15,82 @@ Postgres upgrades yourself instead of Fly managing them. See
 this is worth it for your situation.
 
 **Status as of 2026-08-24: cutover is complete.** `voxai-pg-selfhosted` is
-deployed and is what `voxai-api`/`voxai-worker`/`voxai-jobs` actually use in
-the Fly dev/test environment — the old MPG cluster (`voxai-pg`, id
+deployed and is what `vocetto-api`/`vocetto-worker`/`vocetto-jobs` actually use in
+the Fly dev/test environment — the old MPG cluster (`vocetto-pg`, id
 `w86750817lnr3pk4`) has been fully decommissioned (§8). This supersedes the
 "nothing deployed yet" framing that the rest of this README (written
 2026-08-23, mid-migration) was drafted against — the steps below are now a
 record of what was done, not a forward-looking plan. Note this remains the
 platform's **dev/test** database; Azure is the intended future production
 target (not started) — see the workspace root `CLAUDE.md`.
+
+**Update 2026-09-27 — generic replacement cluster stood up, data fully
+copied, cutover blocked only on credential creation.** A new Fly Postgres
+cluster, `selfhost-database`, was created (same image, same
+`iad`/shared-cpu-1x/1024MB/10GB spec as `voxai-pg-selfhosted`) with a
+deliberately generic name so it can host any project's Postgres going
+forward, not just this platform's. All data lives in a database on that
+cluster named **`vocetto_db`** (not `postgres`, and not `voice_agent` —
+the app-specific name from the old cluster was deliberately dropped in
+favor of the platform's new brand name, per Ambuj's request), copied via
+`pg_dump`/restore through `fly ssh console`'s local-socket peer auth (no
+network password needed at any point, nothing left `.internal` on either
+cluster).
+
+Copy went in two passes: first the non-client-specific reference/catalog
+tables (`providers`, `billing_plans`, `billing_components`,
+`billing_component_prices`, `plan_components`, `simulation_personas`,
+`alembic_version`), then — after explicit confirmation, since this moves
+real customer data — the remaining 56 client tables (`workspaces`,
+`users`, `calls`, `agents`, everything else). Row counts verified to match
+exactly (`api_audit_logs` 2003/2003, `call_events` 161/161, etc.).
+`platform_provider_credentials` was intentionally left empty — it holds
+real provider API keys, not just catalog data, and re-keying that is a
+separate decision. An accidental copy of Fly's own `repmgr` cluster-
+management schema (4 internal tables, native to `selfhost-database`'s own
+fresh cluster init, picked up when the first pass dumped/restored the
+whole `postgres` database) was found and dropped from `vocetto_db` — it's
+not part of the app schema.
+
+Two schema quirks hit along the way, both circular-FK pairs that a
+`pg_dump --data-only` restore can't handle directly (not `DEFERRABLE`):
+`billing_components.active_price_id` ↔ `billing_component_prices`, and
+(in the client-data pass) `workspaces` ↔ `agents`, `agents` ↔
+`agent_versions`, `calls` ↔ `batch_call_targets`, `calls` ↔
+`simulation_runs`. Fix each time: `ALTER TABLE ... DROP CONSTRAINT
+<name>`, load the data, then `ADD CONSTRAINT` back with the original
+definition.
+
+**What's left, and why it's not done yet:** the app-level role services
+would actually connect with doesn't exist on `selfhost-database` yet.
+Creating a new DB credential (and setting it into a live `fly secrets`
+value) is something this session's own sandbox refuses to do — it treats
+agent-created/handled database credentials as out of bounds, independent
+of user go-ahead in chat. **Role name decided: `admin`**, generic across
+whatever else eventually shares this cluster — explicitly not
+`voice_agent`, since that's this one project's name and the whole point
+of `selfhost-database` is to not be project-specific. Ambuj needs to run
+this himself (`fly postgres connect -a selfhost-database` or `fly ssh
+console -a selfhost-database`):
+
+```sql
+CREATE ROLE admin WITH LOGIN PASSWORD '<pick one>';
+GRANT ALL PRIVILEGES ON DATABASE vocetto_db TO admin;
+GRANT ALL ON ALL TABLES IN SCHEMA public TO admin;
+GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO admin;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO admin;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO admin;
+```
+
+Then, per service:
+```bash
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/vocetto_db" -a vocetto-api
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/vocetto_db" -a vocetto-worker
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/vocetto_db" -a vocetto-jobs
+```
+
+`voxai-pg-selfhosted` has been left running untouched throughout, as the
+live/rollback source — nothing currently points at `selfhost-database` yet.
 
 ---
 
@@ -41,7 +109,7 @@ Verified for real, not assumed, before this README was written:
 **Resolved since cutover (2026-08-24):**
 
 1. ~~6PN private networking to a self-hosted Postgres app~~ — resolved:
-   `voxai-pg-selfhosted` is live and reachable from `voxai-api`/`worker`/
+   `voxai-pg-selfhosted` is live and reachable from `vocetto-api`/`worker`/
    `jobs`, working fine as of the cutover. Whatever mechanism Postgres
    clusters use apparently didn't hit the same `.internal` routing failure
    plain app ports did.
@@ -206,10 +274,10 @@ it, and don't do §6 (migration) until it passes.
 ./scripts/verify-connectivity.sh
 ```
 
-What it does: SSHes into `voxai-api` (already-deployed, already has network
+What it does: SSHes into `vocetto-api` (already-deployed, already has network
 access to test from) and attempts a raw TCP connect to
 `voxai-pg-selfhosted.internal:5432`. If it fails the same way the earlier
-`voxai-api` 6PN test failed this session (DNS resolves, TCP connect times
+`vocetto-api` 6PN test failed this session (DNS resolves, TCP connect times
 out), **stop** — the rest of this guide's `.internal` hostnames won't work,
 and you need a different connectivity approach (a `fly proxy`-based
 sidecar, or investigating whether Postgres clusters use a different private
@@ -254,16 +322,16 @@ it finishes, spot-check that row counts / a few known rows (e.g. the
 ./scripts/cutover.sh
 ```
 
-Sets, on `voxai-api`/`voxai-worker`/`voxai-jobs` (same scheme/endpoint
+Sets, on `vocetto-api`/`vocetto-worker`/`vocetto-jobs` (same scheme/endpoint
 discipline already established this session — direct connection, never a
 pooled one; `postgresql+asyncpg://`, never plain `postgresql://`):
 ```bash
-fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a voxai-api
-fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a voxai-worker
-fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a voxai-jobs
+fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a vocetto-api
+fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a vocetto-worker
+fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a vocetto-jobs
 ```
 
-Confirm health after each: `curl https://voxai-api.fly.dev/healthz`, check
+Confirm health after each: `curl https://vocetto-api.fly.dev/healthz`, check
 `fly logs` on worker/jobs for clean startup, no connection errors.
 
 ---
@@ -273,9 +341,9 @@ Confirm health after each: `curl https://voxai-api.fly.dev/healthz`, check
 Skip this and you're paying for both clusters.
 
 ```bash
-fly mpg detach w86750817lnr3pk4 --app voxai-api
-fly mpg detach w86750817lnr3pk4 --app voxai-worker
-fly mpg detach w86750817lnr3pk4 --app voxai-jobs
+fly mpg detach w86750817lnr3pk4 --app vocetto-api
+fly mpg detach w86750817lnr3pk4 --app vocetto-worker
+fly mpg detach w86750817lnr3pk4 --app vocetto-jobs
 ```
 
 **Sit on the still-undeleted MPG cluster for a few days** as a rollback
@@ -314,7 +382,7 @@ before) — update this status line once done.
 
 Fresh `flyio/postgres-flex` clusters ship with `idle_in_transaction_session_timeout`,
 `statement_timeout`, and `lock_timeout` all disabled (`0` — no limit). That
-bit voxai-api on 2026-08-23: an app-side connection got left `idle in
+bit vocetto-api on 2026-08-23: an app-side connection got left `idle in
 transaction` (see `db/session.py`'s `get_session()` for the app-level
 hardening that's the other half of this fix), holding row locks on
 `sessions` for **over an hour**, with nothing on the Postgres side to kill
