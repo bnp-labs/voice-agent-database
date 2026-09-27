@@ -1,6 +1,6 @@
 # voice-agent-database
 
-Self-hosted database infrastructure for the VoxAI platform — one subfolder
+Self-hosted database infrastructure for the Vocetto platform — one subfolder
 per engine.
 
 | Folder | What |
