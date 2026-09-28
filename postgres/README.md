@@ -82,6 +82,65 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO admin;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO admin;
 ```
 
+**This block alone is not enough — confirmed the hard way (2026-09-28,
+`vocetto-api` deploy failure, see the error table below).** `GRANT ALL ON
+ALL TABLES` grants DML (SELECT/INSERT/UPDATE/DELETE/etc.), never ownership
+— and Postgres requires *ownership* (or superuser) to run DDL (`ALTER
+TABLE`, `DROP CONSTRAINT`, ...), which every Alembic migration doing more
+than a data-only `INSERT`/`UPDATE` needs. The `pg_dump`/restore in this
+section ran via `fly ssh console`'s local-socket peer auth, which
+connects as the cluster's `postgres` superuser — every table/sequence it
+restored is therefore still **owned by `postgres`**, not `admin`,
+regardless of the grants above.
+
+The obvious one-liner, `REASSIGN OWNED BY postgres TO admin;`, **does not
+work here** — confirmed: it fails with `cannot reassign ownership of
+objects owned by role "postgres" because they are required by the
+database system`. Root cause not fully pinned down (no `pg_shdepend`
+pinned-dependency row was found tied to `postgres` or to any of its owned
+tables directly — this cluster's `REASSIGN OWNED` apparently balks at
+something else system-level owned by `postgres` cluster-wide, not
+anything specific to `vocetto_db`'s app tables), and not worth losing more
+time chasing since there's a working alternative: reassign ownership
+**per object type**, scoped to `public`, instead of the blanket
+cluster-wide sweep `REASSIGN OWNED` performs. Run via `fly postgres
+connect -a selfhost-database` (interactive — a multi-line `DO` block
+through `fly ssh console -C "..."`'s shell-escaping is not worth fighting),
+`\c vocetto_db` first, then:
+
+```sql
+DO $$
+DECLARE r RECORD;
+BEGIN
+  FOR r IN SELECT tablename FROM pg_tables WHERE schemaname='public' AND tableowner='postgres' LOOP
+    EXECUTE format('ALTER TABLE public.%I OWNER TO admin', r.tablename);
+  END LOOP;
+  FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname='public' AND sequenceowner='postgres' LOOP
+    EXECUTE format('ALTER SEQUENCE public.%I OWNER TO admin', r.sequencename);
+  END LOOP;
+  FOR r IN SELECT viewname FROM pg_views WHERE schemaname='public' AND viewowner='postgres' LOOP
+    EXECUTE format('ALTER VIEW public.%I OWNER TO admin', r.viewname);
+  END LOOP;
+END $$;
+```
+
+`ALTER TABLE/SEQUENCE/VIEW ... OWNER TO` reassigns exactly the one named
+object, with none of `REASSIGN OWNED`'s cluster-wide pinned-object check —
+confirmed there's nothing pinned about any individual app table (the
+earlier per-role/per-object `pg_shdepend` checks came back empty), so this
+path avoids whatever `REASSIGN OWNED` was tripping on entirely. Indexes
+are deliberately not touched — they don't need independent ownership for
+`ALTER TABLE ... DROP CONSTRAINT` (a table-level operation) to work, and
+Postgres cascades a table's own index ownership when the table's owner
+changes for indexes created as part of that table (e.g. a primary key).
+Verify before/after:
+
+```sql
+SELECT tablename, tableowner FROM pg_tables WHERE schemaname = 'public' AND tableowner != 'admin';
+SELECT sequencename, sequenceowner FROM pg_sequences WHERE schemaname = 'public' AND sequenceowner != 'admin';
+```
+Both should return zero rows once done.
+
 Then, per service:
 ```bash
 fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/vocetto_db" -a vocetto-api
@@ -131,6 +190,8 @@ here so the next person doesn't re-derive these from scratch):
 | `fly postgres create` failed mid-provision (`failed to launch VM: ... manifest ...`), left a `pending` app + an orphaned, still-billing 10GB volume behind | Fly doesn't clean up automatically on a failed create | `fly apps destroy <name>` removes the app **and** its volume in one step — confirmed empty afterward with `fly volumes list`. Don't assume a failed create leaves nothing behind; check before retrying. |
 | `fly postgres import`: `region code must be specified when not running interactively`, then (after adding `--region`) `prompt: non interactive` | The import spins up a temporary migration machine and normally prompts for region + VM size — both need explicit flags in a non-interactive/scripted context | Add `--region iad --vm-size shared-cpu-1x` (or your region/size) to the import command |
 | `fly postgres import --create=false` reported `Import complete!`, but the target database (`voice_agent`, matching the source URI's path) had zero tables | `--create=false` doesn't target the database named in the source URI — it silently imports into the target cluster's **default** `postgres` database instead | Use `postgres` as the database name in `DATABASE_URL`, not `voice_agent` — confirmed by checking `postgres` directly (52 tables, real data, including the "Ambuj Workspace" row) after `voice_agent` came up empty. `cutover.sh`'s default was updated accordingly. If you want the `voice_agent` name specifically, migrate the data again with `--create=true` instead (untested here — go with `postgres` unless the name genuinely matters to you). |
+| `vocetto-api` Fly deploy: `ProgrammingError: ... InsufficientPrivilegeError: must be owner of table calls` on `ALTER TABLE calls DROP CONSTRAINT ...` (2026-09-28, first DDL-doing Alembic migration since cutover to `selfhost-database`) | `GRANT ALL ON ALL TABLES` (§0 "What's left" block) grants DML only — the `pg_dump`/restore ran as the `postgres` superuser via peer auth, so `admin` was never the owner, just grantee. Confirmed via `SELECT tablename, tableowner FROM pg_tables`: every table owned by `postgres`. Deploy itself was safe — Fly kept the previous healthy machine serving, no outage — but blocks any future migration doing `ALTER TABLE`/`DROP CONSTRAINT`/etc. | Per-object `ALTER TABLE/SEQUENCE/VIEW ... OWNER TO admin` loop (§0's `DO $$` block above) — **not** `REASSIGN OWNED BY postgres TO admin`, see next row. |
+| `REASSIGN OWNED BY postgres TO admin;` (the obvious fix for the row above): `ERROR: cannot reassign ownership of objects owned by role "postgres" because they are required by the database system` | Not fully root-caused — no `pg_shdepend` row pins `postgres` itself or any individual `vocetto_db` app table (checked directly), so `REASSIGN OWNED`'s cluster-wide sweep is tripping on something else `postgres` owns outside this database's app tables. Not worth chasing further since a working alternative exists. | Reassign ownership per object (`ALTER TABLE`/`ALTER SEQUENCE`/`ALTER VIEW ... OWNER TO`) instead of the blanket `REASSIGN OWNED` — see the `DO $$` block in §0 above. |
 
 ---
 
