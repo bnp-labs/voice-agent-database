@@ -1,6 +1,6 @@
 # voice-agent-database / postgres
 
-Self-hosted Postgres 16 + pgvector for the Vocetto platform on Fly.io — a
+Self-hosted Postgres 16 + pgvector for the Phonops platform on Fly.io — a
 cost-optimized replacement for Fly Managed Postgres (MPG). This folder is
 everything needed to build the image, stand up the cluster, migrate off
 MPG, verify it, and connect to it (from the platform's other Fly apps and
@@ -15,8 +15,8 @@ Postgres upgrades yourself instead of Fly managing them. See
 this is worth it for your situation.
 
 **Status as of 2026-08-24: cutover is complete.** `voxai-pg-selfhosted` is
-deployed and is what `vocetto-api`/`vocetto-worker`/`vocetto-jobs` actually use in
-the Fly dev/test environment — the old MPG cluster (`vocetto-pg`, id
+deployed and is what `phonops-api`/`phonops-worker`/`phonops-jobs` actually use in
+the Fly dev/test environment — the old MPG cluster (`phonops-pg`, id
 `w86750817lnr3pk4`) has been fully decommissioned (§8). This supersedes the
 "nothing deployed yet" framing that the rest of this README (written
 2026-08-23, mid-migration) was drafted against — the steps below are now a
@@ -30,7 +30,7 @@ cluster, `selfhost-database`, was created (same image, same
 `iad`/shared-cpu-1x/1024MB/10GB spec as `voxai-pg-selfhosted`) with a
 deliberately generic name so it can host any project's Postgres going
 forward, not just this platform's. All data lives in a database on that
-cluster named **`vocetto_db`** (not `postgres`, and not `voice_agent` —
+cluster named **`phonops_db`** (not `postgres`, and not `voice_agent` —
 the app-specific name from the old cluster was deliberately dropped in
 favor of the platform's new brand name, per Ambuj's request), copied via
 `pg_dump`/restore through `fly ssh console`'s local-socket peer auth (no
@@ -49,7 +49,7 @@ real provider API keys, not just catalog data, and re-keying that is a
 separate decision. An accidental copy of Fly's own `repmgr` cluster-
 management schema (4 internal tables, native to `selfhost-database`'s own
 fresh cluster init, picked up when the first pass dumped/restored the
-whole `postgres` database) was found and dropped from `vocetto_db` — it's
+whole `postgres` database) was found and dropped from `phonops_db` — it's
 not part of the app schema.
 
 Two schema quirks hit along the way, both circular-FK pairs that a
@@ -75,7 +75,7 @@ console -a selfhost-database`):
 
 ```sql
 CREATE ROLE admin WITH LOGIN PASSWORD '<pick one>';
-GRANT ALL PRIVILEGES ON DATABASE vocetto_db TO admin;
+GRANT ALL PRIVILEGES ON DATABASE phonops_db TO admin;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO admin;
 GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO admin;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO admin;
@@ -83,7 +83,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO admin;
 ```
 
 **This block alone is not enough — confirmed the hard way (2026-09-28,
-`vocetto-api` deploy failure, see the error table below).** `GRANT ALL ON
+`phonops-api` deploy failure, see the error table below).** `GRANT ALL ON
 ALL TABLES` grants DML (SELECT/INSERT/UPDATE/DELETE/etc.), never ownership
 — and Postgres requires *ownership* (or superuser) to run DDL (`ALTER
 TABLE`, `DROP CONSTRAINT`, ...), which every Alembic migration doing more
@@ -100,13 +100,13 @@ database system`. Root cause not fully pinned down (no `pg_shdepend`
 pinned-dependency row was found tied to `postgres` or to any of its owned
 tables directly — this cluster's `REASSIGN OWNED` apparently balks at
 something else system-level owned by `postgres` cluster-wide, not
-anything specific to `vocetto_db`'s app tables), and not worth losing more
+anything specific to `phonops_db`'s app tables), and not worth losing more
 time chasing since there's a working alternative: reassign ownership
 **per object type**, scoped to `public`, instead of the blanket
 cluster-wide sweep `REASSIGN OWNED` performs. Run via `fly postgres
 connect -a selfhost-database` (interactive — a multi-line `DO` block
 through `fly ssh console -C "..."`'s shell-escaping is not worth fighting),
-`\c vocetto_db` first, then:
+`\c phonops_db` first, then:
 
 ```sql
 DO $$
@@ -143,9 +143,9 @@ Both should return zero rows once done.
 
 Then, per service:
 ```bash
-fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/vocetto_db" -a vocetto-api
-fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/vocetto_db" -a vocetto-worker
-fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/vocetto_db" -a vocetto-jobs
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-api
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-worker
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-jobs
 ```
 
 `voxai-pg-selfhosted` has been left running untouched throughout, as the
@@ -168,7 +168,7 @@ Verified for real, not assumed, before this README was written:
 **Resolved since cutover (2026-08-24):**
 
 1. ~~6PN private networking to a self-hosted Postgres app~~ — resolved:
-   `voxai-pg-selfhosted` is live and reachable from `vocetto-api`/`worker`/
+   `voxai-pg-selfhosted` is live and reachable from `phonops-api`/`worker`/
    `jobs`, working fine as of the cutover. Whatever mechanism Postgres
    clusters use apparently didn't hit the same `.internal` routing failure
    plain app ports did.
@@ -190,8 +190,8 @@ here so the next person doesn't re-derive these from scratch):
 | `fly postgres create` failed mid-provision (`failed to launch VM: ... manifest ...`), left a `pending` app + an orphaned, still-billing 10GB volume behind | Fly doesn't clean up automatically on a failed create | `fly apps destroy <name>` removes the app **and** its volume in one step — confirmed empty afterward with `fly volumes list`. Don't assume a failed create leaves nothing behind; check before retrying. |
 | `fly postgres import`: `region code must be specified when not running interactively`, then (after adding `--region`) `prompt: non interactive` | The import spins up a temporary migration machine and normally prompts for region + VM size — both need explicit flags in a non-interactive/scripted context | Add `--region iad --vm-size shared-cpu-1x` (or your region/size) to the import command |
 | `fly postgres import --create=false` reported `Import complete!`, but the target database (`voice_agent`, matching the source URI's path) had zero tables | `--create=false` doesn't target the database named in the source URI — it silently imports into the target cluster's **default** `postgres` database instead | Use `postgres` as the database name in `DATABASE_URL`, not `voice_agent` — confirmed by checking `postgres` directly (52 tables, real data, including the "Ambuj Workspace" row) after `voice_agent` came up empty. `cutover.sh`'s default was updated accordingly. If you want the `voice_agent` name specifically, migrate the data again with `--create=true` instead (untested here — go with `postgres` unless the name genuinely matters to you). |
-| `vocetto-api` Fly deploy: `ProgrammingError: ... InsufficientPrivilegeError: must be owner of table calls` on `ALTER TABLE calls DROP CONSTRAINT ...` (2026-09-28, first DDL-doing Alembic migration since cutover to `selfhost-database`) | `GRANT ALL ON ALL TABLES` (§0 "What's left" block) grants DML only — the `pg_dump`/restore ran as the `postgres` superuser via peer auth, so `admin` was never the owner, just grantee. Confirmed via `SELECT tablename, tableowner FROM pg_tables`: every table owned by `postgres`. Deploy itself was safe — Fly kept the previous healthy machine serving, no outage — but blocks any future migration doing `ALTER TABLE`/`DROP CONSTRAINT`/etc. | Per-object `ALTER TABLE/SEQUENCE/VIEW ... OWNER TO admin` loop (§0's `DO $$` block above) — **not** `REASSIGN OWNED BY postgres TO admin`, see next row. |
-| `REASSIGN OWNED BY postgres TO admin;` (the obvious fix for the row above): `ERROR: cannot reassign ownership of objects owned by role "postgres" because they are required by the database system` | Not fully root-caused — no `pg_shdepend` row pins `postgres` itself or any individual `vocetto_db` app table (checked directly), so `REASSIGN OWNED`'s cluster-wide sweep is tripping on something else `postgres` owns outside this database's app tables. Not worth chasing further since a working alternative exists. | Reassign ownership per object (`ALTER TABLE`/`ALTER SEQUENCE`/`ALTER VIEW ... OWNER TO`) instead of the blanket `REASSIGN OWNED` — see the `DO $$` block in §0 above. |
+| `phonops-api` Fly deploy: `ProgrammingError: ... InsufficientPrivilegeError: must be owner of table calls` on `ALTER TABLE calls DROP CONSTRAINT ...` (2026-09-28, first DDL-doing Alembic migration since cutover to `selfhost-database`) | `GRANT ALL ON ALL TABLES` (§0 "What's left" block) grants DML only — the `pg_dump`/restore ran as the `postgres` superuser via peer auth, so `admin` was never the owner, just grantee. Confirmed via `SELECT tablename, tableowner FROM pg_tables`: every table owned by `postgres`. Deploy itself was safe — Fly kept the previous healthy machine serving, no outage — but blocks any future migration doing `ALTER TABLE`/`DROP CONSTRAINT`/etc. | Per-object `ALTER TABLE/SEQUENCE/VIEW ... OWNER TO admin` loop (§0's `DO $$` block above) — **not** `REASSIGN OWNED BY postgres TO admin`, see next row. |
+| `REASSIGN OWNED BY postgres TO admin;` (the obvious fix for the row above): `ERROR: cannot reassign ownership of objects owned by role "postgres" because they are required by the database system` | Not fully root-caused — no `pg_shdepend` row pins `postgres` itself or any individual `phonops_db` app table (checked directly), so `REASSIGN OWNED`'s cluster-wide sweep is tripping on something else `postgres` owns outside this database's app tables. Not worth chasing further since a working alternative exists. | Reassign ownership per object (`ALTER TABLE`/`ALTER SEQUENCE`/`ALTER VIEW ... OWNER TO`) instead of the blanket `REASSIGN OWNED` — see the `DO $$` block in §0 above. |
 
 ---
 
@@ -335,10 +335,10 @@ it, and don't do §6 (migration) until it passes.
 ./scripts/verify-connectivity.sh
 ```
 
-What it does: SSHes into `vocetto-api` (already-deployed, already has network
+What it does: SSHes into `phonops-api` (already-deployed, already has network
 access to test from) and attempts a raw TCP connect to
 `voxai-pg-selfhosted.internal:5432`. If it fails the same way the earlier
-`vocetto-api` 6PN test failed this session (DNS resolves, TCP connect times
+`phonops-api` 6PN test failed this session (DNS resolves, TCP connect times
 out), **stop** — the rest of this guide's `.internal` hostnames won't work,
 and you need a different connectivity approach (a `fly proxy`-based
 sidecar, or investigating whether Postgres clusters use a different private
@@ -383,16 +383,16 @@ it finishes, spot-check that row counts / a few known rows (e.g. the
 ./scripts/cutover.sh
 ```
 
-Sets, on `vocetto-api`/`vocetto-worker`/`vocetto-jobs` (same scheme/endpoint
+Sets, on `phonops-api`/`phonops-worker`/`phonops-jobs` (same scheme/endpoint
 discipline already established this session — direct connection, never a
 pooled one; `postgresql+asyncpg://`, never plain `postgresql://`):
 ```bash
-fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a vocetto-api
-fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a vocetto-worker
-fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a vocetto-jobs
+fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a phonops-api
+fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a phonops-worker
+fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a phonops-jobs
 ```
 
-Confirm health after each: `curl https://vocetto-api.fly.dev/healthz`, check
+Confirm health after each: `curl https://phonops-api.fly.dev/healthz`, check
 `fly logs` on worker/jobs for clean startup, no connection errors.
 
 ---
@@ -402,9 +402,9 @@ Confirm health after each: `curl https://vocetto-api.fly.dev/healthz`, check
 Skip this and you're paying for both clusters.
 
 ```bash
-fly mpg detach w86750817lnr3pk4 --app vocetto-api
-fly mpg detach w86750817lnr3pk4 --app vocetto-worker
-fly mpg detach w86750817lnr3pk4 --app vocetto-jobs
+fly mpg detach w86750817lnr3pk4 --app phonops-api
+fly mpg detach w86750817lnr3pk4 --app phonops-worker
+fly mpg detach w86750817lnr3pk4 --app phonops-jobs
 ```
 
 **Sit on the still-undeleted MPG cluster for a few days** as a rollback
@@ -443,7 +443,7 @@ before) — update this status line once done.
 
 Fresh `flyio/postgres-flex` clusters ship with `idle_in_transaction_session_timeout`,
 `statement_timeout`, and `lock_timeout` all disabled (`0` — no limit). That
-bit vocetto-api on 2026-08-23: an app-side connection got left `idle in
+bit phonops-api on 2026-08-23: an app-side connection got left `idle in
 transaction` (see `db/session.py`'s `get_session()` for the app-level
 hardening that's the other half of this fix), holding row locks on
 `sessions` for **over an hour**, with nothing on the Postgres side to kill

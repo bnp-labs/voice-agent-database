@@ -1,6 +1,6 @@
 # voice-agent-database
 
-Self-hosted database infrastructure for the Vocetto platform — one subfolder
+Self-hosted database infrastructure for the Phonops platform — one subfolder
 per engine.
 
 | Folder | What |
