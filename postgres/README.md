@@ -1,77 +1,51 @@
 # voice-agent-database / postgres
 
-Self-hosted Postgres 16 + pgvector for the Phonops platform on Fly.io — a
-cost-optimized replacement for Fly Managed Postgres (MPG). This folder is
-everything needed to build the image, stand up the cluster, migrate off
-MPG, verify it, and connect to it (from the platform's other Fly apps and
-from your own laptop).
+Self-hosted Postgres 16 + pgvector for the Phonops platform on Fly.io. This folder is
+everything needed to build the image, stand up the cluster, verify it, and connect to it
+(from the platform's other Fly apps and from your own laptop).
 
-**Cost, why this exists at all:** MPG Basic runs ~$38/mo + ~$0.28/GB-month
-storage (~$41–44/mo all-in for a small instance). A self-hosted single-node
-cluster on a shared-cpu-1x/1GB machine + a small volume runs roughly
-$7–11/mo — about a 70–75% cut. The tradeoff: you own backups, HA, and
-Postgres upgrades yourself instead of Fly managing them. See
-[§9 What you're giving up](#9-what-youre-giving-up-vs-mpg) before deciding
-this is worth it for your situation.
+**Why self-hosted:** Fly Managed Postgres (MPG) Basic runs ~$38/mo + ~$0.28/GB-month
+storage (~$41–44/mo all-in for a small instance). A single-node cluster on a
+shared-cpu-1x/1GB machine + a small volume runs roughly $7–11/mo — about a 70–75% cut.
+The tradeoff: you own backups, HA, and Postgres upgrades yourself instead of Fly managing
+them. See [§9](#9-what-youre-giving-up-vs-mpg) before deciding this is worth it.
 
-**Status as of 2026-08-24: cutover is complete.** `voxai-pg-selfhosted` is
-deployed and is what `phonops-api`/`phonops-worker`/`phonops-jobs` actually use in
-the Fly dev/test environment — the old MPG cluster (`phonops-pg`, id
-`w86750817lnr3pk4`) has been fully decommissioned (§8). This supersedes the
-"nothing deployed yet" framing that the rest of this README (written
-2026-08-23, mid-migration) was drafted against — the steps below are now a
-record of what was done, not a forward-looking plan. Note this remains the
-platform's **dev/test** database; Azure is the intended future production
-target (not started) — see the workspace root `CLAUDE.md`.
+## Current state
 
-**Update 2026-09-27 — generic replacement cluster stood up, data fully
-copied, cutover blocked only on credential creation.** A new Fly Postgres
-cluster, `selfhost-database`, was created (same image, same
-`iad`/shared-cpu-1x/1024MB/10GB spec as `voxai-pg-selfhosted`) with a
-deliberately generic name so it can host any project's Postgres going
-forward, not just this platform's. All data lives in a database on that
-cluster named **`phonops_db`** (not `postgres`, and not `voice_agent` —
-the app-specific name from the old cluster was deliberately dropped in
-favor of the platform's new brand name, per Ambuj's request), copied via
-`pg_dump`/restore through `fly ssh console`'s local-socket peer auth (no
-network password needed at any point, nothing left `.internal` on either
-cluster).
+| | |
+|---|---|
+| Fly app | `selfhost-database` (org `bnp-labs`, region `iad`, 1 node) |
+| Spec | `shared-cpu-1x`, **1024 MB** memory, 10 GB volume, pgvector 0.8.6 |
+| Image | `ghcr.io/bnp-labs/pg-selfhosted:16.11-pgvector0.8.6` |
+| Database | `phonops_db` (the platform's data: all app tables, 65 in `public`) |
+| Role | `admin` — deliberately generic, so the cluster can host other projects' databases too; only database names are project-specific |
+| Consumers | `phonops-api`, `phonops-worker`, `phonops-jobs` via `DATABASE_URL` |
+| Environment | Fly dev/test. Azure is the planned production target and hasn't been started |
 
-Copy went in two passes: first the non-client-specific reference/catalog
-tables (`providers`, `billing_plans`, `billing_components`,
-`billing_component_prices`, `plan_components`, `simulation_personas`,
-`alembic_version`), then — after explicit confirmation, since this moves
-real customer data — the remaining 56 client tables (`workspaces`,
-`users`, `calls`, `agents`, everything else). Row counts verified to match
-exactly (`api_audit_logs` 2003/2003, `call_events` 161/161, etc.).
-`platform_provider_credentials` was intentionally left empty — it holds
-real provider API keys, not just catalog data, and re-keying that is a
-separate decision. An accidental copy of Fly's own `repmgr` cluster-
-management schema (4 internal tables, native to `selfhost-database`'s own
-fresh cluster init, picked up when the first pass dumped/restored the
-whole `postgres` database) was found and dropped from `phonops_db` — it's
-not part of the app schema.
+The cluster is project-agnostic by design: another project gets its own database on the
+same cluster and the shared `admin` role, never a project-named role.
 
-Two schema quirks hit along the way, both circular-FK pairs that a
-`pg_dump --data-only` restore can't handle directly (not `DEFERRABLE`):
-`billing_components.active_price_id` ↔ `billing_component_prices`, and
-(in the client-data pass) `workspaces` ↔ `agents`, `agents` ↔
-`agent_versions`, `calls` ↔ `batch_call_targets`, `calls` ↔
-`simulation_runs`. Fix each time: `ALTER TABLE ... DROP CONSTRAINT
-<name>`, load the data, then `ADD CONSTRAINT` back with the original
-definition.
+`DATABASE_URL` for each consumer:
 
-**What's left, and why it's not done yet:** the app-level role services
-would actually connect with doesn't exist on `selfhost-database` yet.
-Creating a new DB credential (and setting it into a live `fly secrets`
-value) is something this session's own sandbox refuses to do — it treats
-agent-created/handled database credentials as out of bounds, independent
-of user go-ahead in chat. **Role name decided: `admin`**, generic across
-whatever else eventually shares this cluster — explicitly not
-`voice_agent`, since that's this one project's name and the whole point
-of `selfhost-database` is to not be project-specific. Ambuj needs to run
-this himself (`fly postgres connect -a selfhost-database` or `fly ssh
-console -a selfhost-database`):
+```bash
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-api
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-worker
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-jobs
+```
+
+Use a password with no URI-special characters (`/`, `@`, `:`, `?`, `#`).
+
+### Sizing gotcha
+
+Always pass `--vm-memory 1024` to `fly postgres create`. Omitting it silently defaults to
+**256 MB**, and with the full dataset loaded Postgres becomes unresponsive (all Fly health
+checks critical, every query hangs). Fix on a live cluster:
+`fly machine update <id> -a selfhost-database --vm-memory 1024`.
+
+### Role setup
+
+The `admin` role must be created by a human (agent sandboxes refuse to create or handle
+database credentials). Run via `fly postgres connect -a selfhost-database`:
 
 ```sql
 CREATE ROLE admin WITH LOGIN PASSWORD '<pick one>';
@@ -82,31 +56,12 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO admin;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO admin;
 ```
 
-**This block alone is not enough — confirmed the hard way (2026-09-28,
-`phonops-api` deploy failure, see the error table below).** `GRANT ALL ON
-ALL TABLES` grants DML (SELECT/INSERT/UPDATE/DELETE/etc.), never ownership
-— and Postgres requires *ownership* (or superuser) to run DDL (`ALTER
-TABLE`, `DROP CONSTRAINT`, ...), which every Alembic migration doing more
-than a data-only `INSERT`/`UPDATE` needs. The `pg_dump`/restore in this
-section ran via `fly ssh console`'s local-socket peer auth, which
-connects as the cluster's `postgres` superuser — every table/sequence it
-restored is therefore still **owned by `postgres`**, not `admin`,
-regardless of the grants above.
-
-The obvious one-liner, `REASSIGN OWNED BY postgres TO admin;`, **does not
-work here** — confirmed: it fails with `cannot reassign ownership of
-objects owned by role "postgres" because they are required by the
-database system`. Root cause not fully pinned down (no `pg_shdepend`
-pinned-dependency row was found tied to `postgres` or to any of its owned
-tables directly — this cluster's `REASSIGN OWNED` apparently balks at
-something else system-level owned by `postgres` cluster-wide, not
-anything specific to `phonops_db`'s app tables), and not worth losing more
-time chasing since there's a working alternative: reassign ownership
-**per object type**, scoped to `public`, instead of the blanket
-cluster-wide sweep `REASSIGN OWNED` performs. Run via `fly postgres
-connect -a selfhost-database` (interactive — a multi-line `DO` block
-through `fly ssh console -C "..."`'s shell-escaping is not worth fighting),
-`\c phonops_db` first, then:
+`GRANT` gives DML only, never ownership, and Alembic migrations need ownership to run DDL.
+Data restored through `fly ssh console` runs as the `postgres` superuser, so every restored
+table and sequence is owned by `postgres`. `REASSIGN OWNED BY postgres TO admin` fails on
+this cluster (`cannot reassign ownership of objects owned by role "postgres" because they
+are required by the database system`), so reassign per object type instead. Run it
+interactively after `\c phonops_db`:
 
 ```sql
 DO $$
@@ -124,32 +79,24 @@ BEGIN
 END $$;
 ```
 
-`ALTER TABLE/SEQUENCE/VIEW ... OWNER TO` reassigns exactly the one named
-object, with none of `REASSIGN OWNED`'s cluster-wide pinned-object check —
-confirmed there's nothing pinned about any individual app table (the
-earlier per-role/per-object `pg_shdepend` checks came back empty), so this
-path avoids whatever `REASSIGN OWNED` was tripping on entirely. Indexes
-are deliberately not touched — they don't need independent ownership for
-`ALTER TABLE ... DROP CONSTRAINT` (a table-level operation) to work, and
-Postgres cascades a table's own index ownership when the table's owner
-changes for indexes created as part of that table (e.g. a primary key).
-Verify before/after:
+Verify (both queries must return zero rows):
 
 ```sql
 SELECT tablename, tableowner FROM pg_tables WHERE schemaname = 'public' AND tableowner != 'admin';
 SELECT sequencename, sequenceowner FROM pg_sequences WHERE schemaname = 'public' AND sequenceowner != 'admin';
 ```
-Both should return zero rows once done.
 
-Then, per service:
-```bash
-fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-api
-fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-worker
-fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-jobs
-```
+### Copying data between clusters
 
-`voxai-pg-selfhosted` has been left running untouched throughout, as the
-live/rollback source — nothing currently points at `selfhost-database` yet.
+Use `pg_dump` / restore through `fly ssh console` (local-socket peer auth, so no network
+password is ever used). Two schema quirks need a workaround because their foreign keys are
+circular and not `DEFERRABLE`, so a `--data-only` restore cannot load them directly:
+`billing_components.active_price_id` ↔ `billing_component_prices`, `workspaces` ↔ `agents`,
+`agents` ↔ `agent_versions`, `calls` ↔ `batch_call_targets`, and `calls` ↔ `simulation_runs`.
+For each: `ALTER TABLE ... DROP CONSTRAINT <name>`, load the data, then `ADD CONSTRAINT` back
+with the original definition. Do not copy Fly's own `repmgr` schema (it belongs to each
+cluster's own management layer), and note that `platform_provider_credentials` holds real
+provider keys, so copy it only deliberately.
 
 ---
 
@@ -168,7 +115,7 @@ Verified for real, not assumed, before this README was written:
 **Resolved since cutover (2026-08-24):**
 
 1. ~~6PN private networking to a self-hosted Postgres app~~ — resolved:
-   `voxai-pg-selfhosted` is live and reachable from `phonops-api`/`worker`/
+   `selfhost-database` is live and reachable from `phonops-api`/`worker`/
    `jobs`, working fine as of the cutover. Whatever mechanism Postgres
    clusters use apparently didn't hit the same `.internal` routing failure
    plain app ports did.
@@ -185,7 +132,7 @@ here so the next person doesn't re-derive these from scratch):
 | Error | Cause | Fix |
 |---|---|---|
 | `docker push registry.fly.io/...`: `unknown: app repository not found` | `registry.fly.io/<name>` only exists once a Fly app named `<name>` exists — `fly postgres create` (§3) hadn't run yet | Push to GHCR instead (§2) — already fixed in this repo |
-| `fly postgres create`: `failed to get manifest ...: unauthorized` | GHCR package defaults to **private** on first push; Fly can't authenticate to a private third-party registry | Make the package public — **not** the repo's visibility, the package's own settings: `github.com/orgs/bnp-labs/packages/container/voxai-pg-selfhosted/settings` → Change visibility |
+| `fly postgres create`: `failed to get manifest ...: unauthorized` | GHCR package defaults to **private** on first push; Fly can't authenticate to a private third-party registry | Make the package public — **not** the repo's visibility, the package's own settings: `github.com/orgs/bnp-labs/packages/container/selfhost-database/settings` → Change visibility |
 | `fly postgres create`: `manifest unknown [http 404]` after the package was already public | The workflow's tag-construction concatenated the `pgvector_tag` input (`v0.8.6`, with the `v` — needed for `git clone --branch`) directly into the image tag, producing `pgvectorv0.8.6` — a tag nothing else in this repo referenced (everywhere else says `pgvector0.8.6`, no `v`) | Fixed in `.github/workflows/build-and-push.yml` — strips the leading `v` before building the final tag string, in its own step |
 | `fly postgres create` failed mid-provision (`failed to launch VM: ... manifest ...`), left a `pending` app + an orphaned, still-billing 10GB volume behind | Fly doesn't clean up automatically on a failed create | `fly apps destroy <name>` removes the app **and** its volume in one step — confirmed empty afterward with `fly volumes list`. Don't assume a failed create leaves nothing behind; check before retrying. |
 | `fly postgres import`: `region code must be specified when not running interactively`, then (after adding `--region`) `prompt: non interactive` | The import spins up a temporary migration machine and normally prompts for region + VM size — both need explicit flags in a non-interactive/scripted context | Add `--region iad --vm-size shared-cpu-1x` (or your region/size) to the import command |
@@ -253,7 +200,7 @@ the fix for a real error.** `registry.fly.io/<name>` is a per-app
 namespace that only exists once an app named `<name>` already exists in
 your org — and at this point in the guide, `fly postgres create` (§3)
 hasn't run yet, so that app doesn't exist. Confirmed by hitting it for
-real: `docker push registry.fly.io/voxai-pg-selfhosted:...` fails with
+real: `docker push registry.fly.io/pg-selfhosted:...` fails with
 `unknown: app repository not found` before the app exists. Push to GHCR
 (public) instead, and `fly postgres create --image-ref` pulls from there
 in §3 — this is also what Fly's own community recommends for this exact
@@ -263,7 +210,7 @@ scenario.
 infrastructure can't authenticate to pull a private third-party registry
 image (this bit the platform's own application images earlier this
 session, same underlying limitation). One-time: GitHub → `bnp-labs` org →
-Packages → `voxai-pg-selfhosted` → Package settings → Change visibility →
+Packages → `pg-selfhosted` → Package settings → Change visibility →
 Public.
 
 Use the provided GitHub Actions workflow — same pattern already used for
@@ -284,7 +231,7 @@ Or manually, from a real amd64 machine (a Linux CI box, not your Mac):
 ```bash
 docker login ghcr.io -u <your-github-username>   # PAT with write:packages
 docker buildx build --platform linux/amd64 \
-  -t ghcr.io/bnp-labs/voxai-pg-selfhosted:16.11-pgvector0.8.6 \
+  -t ghcr.io/bnp-labs/pg-selfhosted:16.11-pgvector0.8.6 \
   --push .
 ```
 
@@ -297,14 +244,14 @@ backups on from the start, using the custom image from §2:
 
 ```bash
 fly postgres create \
-  --name voxai-pg-selfhosted \
+  --name selfhost-database \
   --org bnp-labs \
   --region iad \
   --initial-cluster-size 1 \
   --vm-cpu-kind shared --vm-cpus 1 --vm-memory 1024 \
   --volume-size 10 \
   --enable-backups \
-  --image-ref ghcr.io/bnp-labs/voxai-pg-selfhosted:16.11-pgvector0.8.6
+  --image-ref ghcr.io/bnp-labs/pg-selfhosted:16.11-pgvector0.8.6
 ```
 
 `--enable-backups` provisions a Tigris (Fly's S3-compatible storage)
@@ -318,7 +265,7 @@ Confirm pgvector is actually there on the running cluster (belt-and-braces
 — the image build already proved this works, but confirm the deployed
 instance too):
 ```bash
-fly postgres connect -a voxai-pg-selfhosted
+fly postgres connect -a selfhost-database
 # inside psql:
 CREATE EXTENSION IF NOT EXISTS vector;
 SELECT extversion FROM pg_extension WHERE extname = 'vector';
@@ -337,7 +284,7 @@ it, and don't do §6 (migration) until it passes.
 
 What it does: SSHes into `phonops-api` (already-deployed, already has network
 access to test from) and attempts a raw TCP connect to
-`voxai-pg-selfhosted.internal:5432`. If it fails the same way the earlier
+`selfhost-database.internal:5432`. If it fails the same way the earlier
 `phonops-api` 6PN test failed this session (DNS resolves, TCP connect times
 out), **stop** — the rest of this guide's `.internal` hostnames won't work,
 and you need a different connectivity approach (a `fly proxy`-based
@@ -352,8 +299,8 @@ An untested backup isn't a backup. Before migrating real data onto this
 cluster, prove the backup mechanism actually works on this empty cluster
 first — cheap to test now, expensive to discover it doesn't work later:
 ```bash
-fly postgres backup create -a voxai-pg-selfhosted
-fly postgres backup list -a voxai-pg-selfhosted
+fly postgres backup create -a selfhost-database
+fly postgres backup list -a selfhost-database
 # then actually try a restore into a throwaway cluster and confirm it worked
 ```
 
@@ -369,7 +316,7 @@ Wraps:
 ```bash
 fly postgres import \
   "postgresql://voice_agent:<password>@direct.w86750817lnr3pk4.flympg.net/voice_agent" \
-  -a voxai-pg-selfhosted
+  -a selfhost-database
 ```
 Runs as a one-off Fly migration machine — schema + data in one step. After
 it finishes, spot-check that row counts / a few known rows (e.g. the
@@ -387,9 +334,9 @@ Sets, on `phonops-api`/`phonops-worker`/`phonops-jobs` (same scheme/endpoint
 discipline already established this session — direct connection, never a
 pooled one; `postgresql+asyncpg://`, never plain `postgresql://`):
 ```bash
-fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a phonops-api
-fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a phonops-worker
-fly secrets set DATABASE_URL="postgresql+asyncpg://voice_agent:<password>@voxai-pg-selfhosted.internal:5432/voice_agent" -a phonops-jobs
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-api
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-worker
+fly secrets set DATABASE_URL="postgresql+asyncpg://admin:<password>@selfhost-database.internal:5432/phonops_db" -a phonops-jobs
 ```
 
 Confirm health after each: `curl https://phonops-api.fly.dev/healthz`, check
@@ -432,10 +379,10 @@ fly mpg delete w86750817lnr3pk4
 ## 10. Ongoing maintenance
 
 **Status: commands below not yet confirmed run against the live
-`voxai-pg-selfhosted` cluster** — see `docs/platform/known-issues.md` Tier 1 #3 in
+`selfhost-database` cluster** — see `docs/platform/known-issues.md` Tier 1 #3 in
 the workspace root. This was the root fix for the 2026-08-23 incident (which
 happened on the then-live MPG cluster); run it here now that
-`voxai-pg-selfhosted` is the actual live database. Needs to be run directly
+`selfhost-database` is the actual live database. Needs to be run directly
 by Ambuj (`ALTER DATABASE` has tripped the agent permission classifier
 before) — update this status line once done.
 
@@ -453,8 +400,8 @@ pool filled up and started timing out. Run this against every new cluster,
 not just this one:
 
 ```bash
-fly ssh console -a voxai-pg-selfhosted -C "psql -U postgres -h /var/run/postgresql -p 5433 -d postgres -c \"ALTER DATABASE postgres SET idle_in_transaction_session_timeout = '60s';\""
-fly ssh console -a voxai-pg-selfhosted -C "psql -U postgres -h /var/run/postgresql -p 5433 -d postgres -c \"ALTER DATABASE postgres SET lock_timeout = '15s';\""
+fly ssh console -a selfhost-database -C "psql -U postgres -h /var/run/postgresql -p 5433 -d phonops_db -c \"ALTER DATABASE phonops_db SET idle_in_transaction_session_timeout = '60s';\""
+fly ssh console -a selfhost-database -C "psql -U postgres -h /var/run/postgresql -p 5433 -d phonops_db -c \"ALTER DATABASE phonops_db SET lock_timeout = '15s';\""
 ```
 
 `idle_in_transaction_session_timeout=60s` is the one that matters most: it
@@ -475,12 +422,12 @@ needs it, set it per-session in that code path, not globally.
 
 Verify what's active any time:
 ```bash
-fly ssh console -a voxai-pg-selfhosted -C "psql -U postgres -h /var/run/postgresql -p 5433 -d postgres -c \"SHOW idle_in_transaction_session_timeout;\""
+fly ssh console -a selfhost-database -C "psql -U postgres -h /var/run/postgresql -p 5433 -d phonops_db -c \"SHOW idle_in_transaction_session_timeout;\""
 ```
 
 Check for a stuck session right now (also surfaced by `voice-agent-api doctor`'s `stuck_transactions` check):
 ```bash
-fly ssh console -a voxai-pg-selfhosted -C "psql -U postgres -h /var/run/postgresql -p 5433 -d postgres -c \"SELECT pid, state, now()-xact_start AS stuck_for FROM pg_stat_activity WHERE state = 'idle in transaction';\""
+fly ssh console -a selfhost-database -C "psql -U postgres -h /var/run/postgresql -p 5433 -d phonops_db -c \"SELECT pid, state, now()-xact_start AS stuck_for FROM pg_stat_activity WHERE state = 'idle in transaction';\""
 ```
 
 ```bash
@@ -489,7 +436,7 @@ fly ssh console -a voxai-pg-selfhosted -C "psql -U postgres -h /var/run/postgres
 
 Do a real restore drill periodically (not just once at setup) — the same
 discipline the original VPS deployment plan already established for its
-own `pg_backup.sh`/`pg_restore.sh` pattern (`docs/archive/vps-deployment-plan.md`
+own `pg_backup.sh`/`pg_restore.sh` pattern (`docs/vps/deployment-plan.md`
 §11 in the workspace root), reused here instead of reinvented.
 
 ---
@@ -497,7 +444,7 @@ own `pg_backup.sh`/`pg_restore.sh` pattern (`docs/archive/vps-deployment-plan.md
 ## 11. Accessing this database from your laptop
 
 ```bash
-fly proxy 5432:5432 -a voxai-pg-selfhosted
+fly proxy 5432:5432 -a selfhost-database
 ```
 Opens a WireGuard tunnel, binds `localhost:5432` to the cluster's real
 `5432`. While that's running, connect with `psql`, TablePlus, Postico,

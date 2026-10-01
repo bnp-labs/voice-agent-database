@@ -5,13 +5,13 @@
 # anything here for the first time.
 # =============================================================================
 
-APP        := voxai-pg-selfhosted
+APP        := selfhost-database
 ORG        := bnp-labs
 REGION     := iad
 # GHCR, not registry.fly.io — that's a per-app namespace that only exists
 # once the Fly app itself exists, which hasn't happened yet at build time.
 # See README.md §2 for the "app repository not found" error this avoids.
-IMAGE       := ghcr.io/bnp-labs/voxai-pg-selfhosted:16.11-pgvector0.8.6
+IMAGE       := ghcr.io/bnp-labs/pg-selfhosted:16.11-pgvector0.8.6
 MPG_SOURCE_URI ?=  # set before `make migrate` — postgresql://user:pass@direct.<hash>.flympg.net/db
 
 .PHONY: help
@@ -31,7 +31,7 @@ push: ## Push a locally-built image to GHCR (only if you built it on real amd64 
 	@echo "docker login ghcr.io -u <your-github-username> (needs a PAT with write:packages)"
 	docker push $(IMAGE)
 	@echo "First push only: make this GHCR package PUBLIC (github.com/bnp-labs -> Packages ->"
-	@echo "voxai-pg-selfhosted -> Package settings -> Change visibility). Fly can't pull a private one."
+	@echo "pg-selfhosted -> Package settings -> Change visibility). Fly can't pull a private one."
 
 .PHONY: create-cluster
 create-cluster: ## §3 — create the single-node cluster with backups enabled

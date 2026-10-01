@@ -10,7 +10,7 @@
 # exists specifically because that should be verified, not assumed.
 set -euo pipefail
 
-PG_APP="${1:-voxai-pg-selfhosted}"
+PG_APP="${1:-selfhost-database}"
 TEST_FROM_APP="${2:-phonops-api}"
 
 echo "Testing TCP connectivity from ${TEST_FROM_APP} to ${PG_APP}.internal:5432 ..."

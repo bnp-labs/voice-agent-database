@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SOURCE_URI="${1:?Usage: $0 <mpg-source-uri>}"
-PG_APP="${2:-voxai-pg-selfhosted}"
+PG_APP="${2:-selfhost-database}"
 
 echo "⚠️  This imports INTO ${PG_APP} FROM the URI you provided."
 echo "    Confirm §4 (verify-connectivity.sh) has already passed before"

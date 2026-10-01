@@ -4,7 +4,7 @@
 # just once at setup.
 set -euo pipefail
 
-PG_APP="${1:-voxai-pg-selfhosted}"
+PG_APP="${1:-selfhost-database}"
 
 echo "=== Recent backups for ${PG_APP} ==="
 fly postgres backup list -a "$PG_APP"

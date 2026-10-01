@@ -8,7 +8,7 @@
 # Why GHCR, not registry.fly.io: registry.fly.io/<name> is a per-APP
 # namespace — it only exists once an app named <name> exists in your org,
 # which `fly postgres create` hasn't run yet at this point. Confirmed by
-# hitting this for real: `docker push registry.fly.io/voxai-pg-selfhosted:...`
+# hitting this for real: `docker push registry.fly.io/pg-selfhosted:...`
 # failed with "unknown: app repository not found" before the app existed.
 # Push to GHCR (public) instead, then `fly postgres create --image-ref`
 # pulls from there — this is also the pattern Fly's own community
@@ -41,7 +41,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/voxai-pg-selfhosted
+  IMAGE_NAME: ${{ github.repository_owner }}/pg-selfhosted
 
 jobs:
   build-and-push:
@@ -95,5 +95,5 @@ jobs:
       - name: Reminder
         run: |
           echo "::notice::First push only — go make this GHCR package PUBLIC"
-          echo "::notice::(github.com/bnp-labs -> Packages -> voxai-pg-selfhosted -> Package settings -> Change visibility)."
+          echo "::notice::(github.com/bnp-labs -> Packages -> pg-selfhosted -> Package settings -> Change visibility)."
           echo "::notice::Fly cannot pull a private third-party registry image."
