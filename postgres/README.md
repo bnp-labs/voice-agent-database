@@ -92,7 +92,7 @@ Use `pg_dump` / restore through `fly ssh console` (local-socket peer auth, so no
 password is ever used). Two schema quirks need a workaround because their foreign keys are
 circular and not `DEFERRABLE`, so a `--data-only` restore cannot load them directly:
 `billing_components.active_price_id` ↔ `billing_component_prices`, `workspaces` ↔ `agents`,
-`agents` ↔ `agent_versions`, `calls` ↔ `batch_call_targets`, and `calls` ↔ `simulation_runs`.
+`agents` ↔ `agent_versions`, `calls` ↔ `campaign_targets`, and `calls` ↔ `simulation_runs`.
 For each: `ALTER TABLE ... DROP CONSTRAINT <name>`, load the data, then `ADD CONSTRAINT` back
 with the original definition. Do not copy Fly's own `repmgr` schema (it belongs to each
 cluster's own management layer), and note that `platform_provider_credentials` holds real
